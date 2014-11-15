@@ -16,7 +16,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // A copy of the GNU General Public License is in the file COPYING.
 //
-// modified from coap-client
+// modified from coap-client and dtls-client
 // Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>
 //
 #define __APPLE_USE_RFC_2292

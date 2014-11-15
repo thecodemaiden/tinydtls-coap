@@ -16,6 +16,7 @@
 // A copy of the GNU General Public License is in the file COPYING.
 //
 // Modified from server.c (libcoap) and dtls-server.c (tinydtls)
+// Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>
 //
 #define __APPLE_USE_RFC_2292
 #include <assert.h>
