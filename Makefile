@@ -1,11 +1,11 @@
 INCLUDE_DIR:=/Users/abannis/REMAP/coap/inc
 LIB_DIR:=/Users/abannis/REMAP/coap/lib
 
-CFLAGS:=-Wall -g -O2
+CFLAGS:=-Wall -g -O0
 LDFLAGS:=-L$(LIB_DIR)
 
 
-SOURCES:= coap-server.c dtls-server.c coap-client.c dtls-client.c coaps-server.c
+SOURCES:= coaps-client.c  coaps-server.c
 PROGRAMS:= $(patsubst %.c, %, $(SOURCES))
 
 all:	$(PROGRAMS)
@@ -35,10 +35,16 @@ dtls-server: dtls-server.o
 	$(CC) -o $@ $< $(LDFLAGS) -ltinydtls
 
 coaps-server.o:	coaps-server.c
-	$(CC) -c -I$(INCLUDE_DIR) -o $@ $< -DDTLSv12 -DWITH_SHA256 -DWITH_POSIX 
+	$(CC) -c  $(CFLAGS) -I$(INCLUDE_DIR) -o $@ $< -DDTLSv12 -DWITH_SHA256 -DWITH_POSIX 
 
 coaps-server: coaps-server.o
 	$(CC) -o $@ $< $(LDFLAGS) -lcoap -ltinydtls
 
+coaps-client: coaps-client.o 
+	$(CC) -o $@ $< $(LDFLAGS) -lcoap -ltinydtls
+
+coaps-client.o:	coaps-client.c
+	$(CC) -c $(CFLAGS) -I$(INCLUDE_DIR) -o $@ $< -DDTLSv12 -DWITH_SHA256 -DWITH_POSIX 
+ 
 clean:
 	@rm -f $(PROGRAMS) *.o

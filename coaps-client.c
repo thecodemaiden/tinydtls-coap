@@ -52,8 +52,6 @@
 
 extern size_t dsrv_print_addr(const session_t *, unsigned char *, size_t);
 
-static char buf[200];
-static size_t len = 0;
 
 static str output_file = { 0, NULL }; /* output file name */
 
@@ -92,14 +90,22 @@ coap_tick_t max_wait;		/* global timeout (changed by set_timeout()) */
 unsigned int obs_seconds = 30;	/* default observe time */
 coap_tick_t obs_wait = 0;	/* timeout for current subscription */
 
-#define min(a,b) ((a) < (b) ? (a) : (b))
-
 static void
 set_timeout(coap_tick_t *timer, const unsigned int seconds) {
   coap_ticks(timer);
   *timer += seconds * COAP_TICKS_PER_SECOND;
 }
 // COAP
+typedef struct {
+    int fd;
+    coap_context_t *coap_context;
+} coaps_context_t;
+static coaps_context_t sec_ctx = {
+    .fd = 0,
+    .coap_context = NULL
+};
+struct dtls_context_t *globalCtx = NULL;
+static session_t globalSession;
 
 /* This function is the "key store" for tinyDTLS. It is called to
  * retrieve a key for the given identiy within this particular
@@ -122,36 +128,25 @@ get_key(struct dtls_context_t *ctx,
   return 0;
 }
 
-void
-try_send(struct dtls_context_t *ctx, session_t *dst) {
-  int res;
-  res = dtls_write(ctx, dst, (uint8 *)buf, len);
-  if (res >= 0) {
-    memmove(buf, buf + res, len - res);
-    len -= res;
-  }
-}
-
-void
-handle_stdin() {
-  if (fgets(buf + len, sizeof(buf) - len, stdin))
-    len += strlen(buf + len);
-}
-
 int
 read_from_peer(struct dtls_context_t *ctx, 
 	       session_t *session, uint8 *data, size_t len) {
-  size_t i;
-  for (i = 0; i < len; i++)
-    printf("%c", data[i]);
-  return 0;
+
+    printf("IFINDEX:%d\n", session->ifindex);
+    coap_address_t srcAddr;
+    coap_context_t *coap_ctx = ((coaps_context_t *)dtls_get_app_data(ctx))->coap_context;
+
+    memcpy(&(srcAddr.addr), &(session->addr), session->size);
+    srcAddr.size = session->size;
+    
+   return coap_read_from_buf(data, len, coap_ctx, &srcAddr);
 }
 
 int
 send_to_peer(struct dtls_context_t *ctx, 
 	     session_t *session, uint8 *data, size_t len) {
 
-  int fd = *(int *)dtls_get_app_data(ctx);
+  int fd = ((coaps_context_t *)dtls_get_app_data(ctx))->fd;
   return sendto(fd, data, len, MSG_DONTWAIT,
 		&session->addr.sa, session->size);
 }
@@ -162,13 +157,12 @@ extern void dump(unsigned char *buf, size_t len);
 
 int
 dtls_handle_read(struct dtls_context_t *ctx) {
-  int fd;
   session_t session;
 #define MAX_READ_BUF 2000
   static uint8 buf[MAX_READ_BUF];
   int len;
 
-  fd = *(int *)dtls_get_app_data(ctx);
+  int fd = ((coaps_context_t *)dtls_get_app_data(ctx))->fd;
   
   if (!fd)
     return -1;
@@ -177,6 +171,7 @@ dtls_handle_read(struct dtls_context_t *ctx) {
   session.size = sizeof(session.addr);
   len = recvfrom(fd, buf, MAX_READ_BUF, 0, 
 		 &session.addr.sa, &session.size);
+  session.ifindex = fd;
   
   if (len < 0) {
     perror("recvfrom");
@@ -196,74 +191,28 @@ dtls_handle_read(struct dtls_context_t *ctx) {
   return dtls_handle_message(ctx, &session, buf, len);
 }    
 
-/* stolen from libcoap: */
-int 
-resolve_address(const char *server, struct sockaddr *dst) {
-  
-  struct addrinfo *res, *ainfo;
-  struct addrinfo hints;
-  static char addrstr[256];
-  int error;
-
-  memset(addrstr, 0, sizeof(addrstr));
-  if (server && strlen(server) > 0)
-    memcpy(addrstr, server, strlen(server));
-  else
-    memcpy(addrstr, "localhost", 9);
-
-  memset ((char *)&hints, 0, sizeof(hints));
-  hints.ai_socktype = SOCK_DGRAM;
-  hints.ai_family = AF_UNSPEC;
-
-  error = getaddrinfo(addrstr, "", &hints, &res);
-
-  if (error != 0) {
-    fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(error));
-    return error;
-  }
-
-  for (ainfo = res; ainfo != NULL; ainfo = ainfo->ai_next) {
-
-    switch (ainfo->ai_family) {
-    case AF_INET6:
-    case AF_INET:
-
-      memcpy(dst, ainfo->ai_addr, ainfo->ai_addrlen);
-      return ainfo->ai_addrlen;
-    default:
-      ;
-    }
-  }
-
-  freeaddrinfo(res);
-  return -1;
-}
-
 /*---------------------------------------------------------------------------*/
-void
-usage( const char *program, const char *version) {
-  const char *p;
+static int didError = 0;
+static int dtlsReady = 0;
+int handle_dtls_event (dtls_context_t *ctx, 
+        session_t *session, dtls_alert_level_t level, unsigned short code)
+{
+    if (level > 0) {
+        didError = 1;
+        perror("DTLS ERROR EVENT");
+    } else if (code == DTLS_EVENT_CONNECTED) {
+        dtlsReady = 1;
+    }
 
-  p = strrchr( program, '/' );
-  if ( p )
-    program = ++p;
-
-  fprintf(stderr, "%s v%s -- DTLS client implementation\n"
-	  "(c) 2011-2012 Olaf Bergmann <bergmann@tzi.org>\n\n"
-	  "usage: %s [-o file][-p port] [-v num] addr [port]\n"
-	  "\t-o file\t\toutput received data to this file (use '-' for STDOUT)\n"
-	  "\t-p port\t\tlisten on specified port (default is %d)\n"
-	  "\t-v num\t\tverbosity level (default: 3)\n",
-	   program, version, program, DEFAULT_PORT);
+    return 0;
 }
 
 static dtls_handler_t cb = {
   .write = send_to_peer,
   .read  = read_from_peer,
-  .event = NULL,
+  .event = handle_dtls_event,
   .get_key = get_key
 };
-
 
 
 int
@@ -1117,15 +1066,33 @@ get_context(const char *node, const char *port) {
   return ctx;
 }
 
+coap_tid_t coaps_send_handler(coap_context_t *ctx, const coap_address_t *dst, coap_pdu_t *pdu)
+{
+
+// TODO: get a global ref to the dtls_context... :'(
+   // HACK: making the session ourselves
+
+    coap_tid_t id = COAP_INVALID_TID;
+    uint8 buf[COAP_MAX_PDU_SIZE];
+    memcpy(buf, pdu->hdr, pdu->length);
+    int bytes_written = dtls_write(globalCtx, &globalSession, buf, pdu->length);
+    if (bytes_written > 0) {
+      coap_transaction_id(dst, pdu, &id);
+    } else {
+      coap_log(LOG_CRIT, "coap_send: sendto\n");
+    }
+    return id;
+}
+
+
 int
 main(int argc, char **argv) {
   coap_context_t  *ctx = NULL;
   coap_address_t dst;
   static char addr[INET6_ADDRSTRLEN];
   void *addrptr = NULL;
-  fd_set readfds, writefds;
-  struct timeval timeout;
-  int fd, result;
+  fd_set readfds;
+  int  result;
   coap_tick_t now;
   coap_queue_t *nextpdu;
   coap_pdu_t  *pdu;
@@ -1133,14 +1100,13 @@ main(int argc, char **argv) {
   unsigned short port = COAP_DEFAULT_PORT;
   char port_str[NI_MAXSERV] = "0";
   int opt, res;
+  struct timeval tv;
   char *group = NULL;
   coap_log_t log_level = LOG_WARNING;
   coap_tid_t tid = COAP_INVALID_TID;
 
-  int on = 1;
+  int sentPayload = 0;
 
-  dtls_context_t *dtls_context = NULL;
-  session_t dst;
 
   dtls_init();
   snprintf(port_str, sizeof(port_str), "%d", port);
@@ -1216,7 +1182,9 @@ main(int argc, char **argv) {
     }
   }
 
+  coap_set_send_handler(&coaps_send_handler);
   coap_set_log_level(log_level);
+  dtls_set_log_level(log_level);
 
   if ( optind < argc )
     cmdline_uri( argv[optind] );
@@ -1244,29 +1212,28 @@ main(int argc, char **argv) {
   dst.size = res;
   dst.addr.sin.sin_port = htons(port);
 
-  /* add Uri-Host if server address differs from uri.host */
-  
-  switch (dst.addr.sa.sa_family) {
-  case AF_INET: 
-    addrptr = &dst.addr.sin.sin_addr;
-
-    /* create context for IPv4 */
-    ctx = get_context("0.0.0.0", port_str);
-    break;
-  case AF_INET6:
-    addrptr = &dst.addr.sin6.sin6_addr;
-
-    /* create context for IPv6 */
-    ctx = get_context("::", port_str);
-    break;
-  default:
-    ;
-  }
-
+  ctx = coap_new_context(&dst);
   if (!ctx) {
     coap_log(LOG_EMERG, "cannot create context\n");
     return -1;
   }
+  int on = 1;
+  int fd = ctx->sockfd;
+#ifdef IPV6_RECVPKTINFO
+  if (setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on) ) < 0) {
+#else /* IPV6_RECVPKTINFO */
+  if (setsockopt(fd, IPPROTO_IPV6, IPV6_PKTINFO, &on, sizeof(on) ) < 0) {
+#endif /* IPV6_RECVPKTINFO */
+    dsrv_log(LOG_ALERT, "setsockopt IPV6_PKTINFO: %s\n", strerror(errno));
+  }
+
+  sec_ctx.fd = ctx->sockfd;
+  sec_ctx.coap_context = ctx;
+
+  dtls_session_init(&globalSession);
+  globalSession.size = dst.size;
+  memcpy(&(globalSession.addr), &dst.addr, dst.size);
+  globalSession.ifindex = ctx->sockfd;
 
   coap_register_option(ctx, COAP_OPTION_BLOCK2);
   coap_register_response_handler(ctx, message_handler);
@@ -1302,42 +1269,53 @@ main(int argc, char **argv) {
   }
 #endif
 
-  if (pdu->hdr->type == COAP_MESSAGE_CON)
-    tid = coap_send_confirmed(ctx, &dst, pdu);
-  else 
-    tid = coap_send(ctx, &dst, pdu);
+  globalCtx = dtls_new_context(&sec_ctx);
+  dtls_set_handler(globalCtx, &cb);
 
-  if (pdu->hdr->type != COAP_MESSAGE_CON || tid == COAP_INVALID_TID)
-    coap_delete_pdu(pdu);
+  dtls_connect(globalCtx, &globalSession);
 
   set_timeout(&max_wait, wait_seconds);
   debug("timeout is set to %d seconds\n", wait_seconds);
 
-  while ( !(ready && coap_can_exit(ctx)) ) {
+  while ( !(ready && coap_can_exit(ctx)) && !didError ) {
     FD_ZERO(&readfds);
     FD_SET( ctx->sockfd, &readfds );
 
-    nextpdu = coap_peek_next( ctx );
+    if (dtlsReady) {
+        if (!sentPayload) {
 
-    coap_ticks(&now);
-    while (nextpdu && nextpdu->t <= now - ctx->sendqueue_basetime) {
-      coap_retransmit( ctx, coap_pop_next( ctx ));
-      nextpdu = coap_peek_next( ctx );
-    }
+          if (pdu->hdr->type == COAP_MESSAGE_CON)
+            tid = coap_send_confirmed(ctx, &dst, pdu);
+          else 
+            tid = coap_send(ctx, &dst, pdu);
 
-    if (nextpdu && nextpdu->t < min(obs_wait ? obs_wait : max_wait, max_wait) - now) { 
-      /* set timeout if there is a pdu to send */
-      tv.tv_usec = ((nextpdu->t) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-      tv.tv_sec = (nextpdu->t) / COAP_TICKS_PER_SECOND;
-    } else {
-      /* check if obs_wait fires before max_wait */
-      if (obs_wait && obs_wait < max_wait) {
-	tv.tv_usec = ((obs_wait - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-	tv.tv_sec = (obs_wait - now) / COAP_TICKS_PER_SECOND;	
-      } else {
-	tv.tv_usec = ((max_wait - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-	tv.tv_sec = (max_wait - now) / COAP_TICKS_PER_SECOND;
-      }
+          if (pdu->hdr->type != COAP_MESSAGE_CON || tid == COAP_INVALID_TID)
+            coap_delete_pdu(pdu);
+        }
+
+
+        nextpdu = coap_peek_next( ctx );
+
+        coap_ticks(&now);
+        while (nextpdu && nextpdu->t <= now - ctx->sendqueue_basetime) {
+          coap_retransmit( ctx, coap_pop_next( ctx ));
+          nextpdu = coap_peek_next( ctx );
+        }
+
+        if (nextpdu && nextpdu->t < min(obs_wait ? obs_wait : max_wait, max_wait) - now) { 
+          /* set timeout if there is a pdu to send */
+          tv.tv_usec = ((nextpdu->t) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
+          tv.tv_sec = (nextpdu->t) / COAP_TICKS_PER_SECOND;
+        } else {
+          /* check if obs_wait fires before max_wait */
+          if (obs_wait && obs_wait < max_wait) {
+        tv.tv_usec = ((obs_wait - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
+        tv.tv_sec = (obs_wait - now) / COAP_TICKS_PER_SECOND;	
+          } else {
+        tv.tv_usec = ((max_wait - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
+        tv.tv_sec = (max_wait - now) / COAP_TICKS_PER_SECOND;
+          }
+        }
     }
 
     result = select(ctx->sockfd + 1, &readfds, 0, 0, &tv);
@@ -1346,8 +1324,8 @@ main(int argc, char **argv) {
       perror("select");
     } else if ( result > 0 ) {	/* read from socket */
       if ( FD_ISSET( ctx->sockfd, &readfds ) ) {
-	coap_read( ctx );	/* read received data */
-	coap_dispatch( ctx );	/* and dispatch PDUs from receivequeue */
+	dtls_handle_read( globalCtx );	/* read received data */
+    if (dtlsReady)  coap_dispatch( ctx );	/* and dispatch PDUs from receivequeue */
       }
     } else { /* timeout */
       coap_ticks(&now);
@@ -1369,142 +1347,7 @@ main(int argc, char **argv) {
   close_output();
 
   coap_free_context( ctx );
-  dtls_free_context(dtls_context);
+  dtls_free_context(globalCtx);
 
   return 0;
-}
-
-int 
-dtls_main(int argc, char **argv) {
-  dtls_context_t *dtls_context = NULL;
-  fd_set rfds, wfds;
-  struct timeval timeout;
-  unsigned short port = DEFAULT_PORT;
-  char port_str[NI_MAXSERV] = "0";
-  log_t log_level = LOG_WARN;
-  int fd, result;
-  int on = 1;
-  int opt, res;
-  session_t dst;
-
-  dtls_init();
-  snprintf(port_str, sizeof(port_str), "%d", port);
-
-  while ((opt = getopt(argc, argv, "p:o:v:")) != -1) {
-    switch (opt) {
-    case 'p' :
-      strncpy(port_str, optarg, NI_MAXSERV-1);
-      port_str[NI_MAXSERV - 1] = '\0';
-      break;
-    case 'o' :
-      output_file.length = strlen(optarg);
-      output_file.s = (unsigned char *)malloc(output_file.length + 1);
-      
-      if (!output_file.s) {
-	dsrv_log(LOG_CRIT, "cannot set output file: insufficient memory\n");
-	exit(-1);
-      } else {
-	/* copy filename including trailing zero */
-	memcpy(output_file.s, optarg, output_file.length + 1);
-      }
-      break;
-    case 'v' :
-      log_level = strtol(optarg, NULL, 10);
-      break;
-    default:
-      usage(argv[0], PACKAGE_VERSION);
-      exit(1);
-    }
-  }
-
-  dtls_set_log_level(log_level);
-  
-  if (argc <= optind) {
-    usage(argv[0], PACKAGE_VERSION);
-    exit(1);
-  }
-  
-  memset(&dst, 0, sizeof(session_t));
-  /* resolve destination address where server should be sent */
-  res = resolve_address(argv[optind++], &dst.addr.sa);
-  if (res < 0) {
-    dsrv_log(LOG_EMERG, "failed to resolve address\n");
-    exit(-1);
-  }
-  dst.size = res;
-
-  /* use port number from command line when specified or the listen
-     port, otherwise */
-  dst.addr.sin.sin_port = htons(atoi(optind < argc ? argv[optind++] : port_str));
-
-  
-  /* init socket and set it to non-blocking */
-  fd = socket(dst.addr.sa.sa_family, SOCK_DGRAM, 0);
-
-  if (fd < 0) {
-    dsrv_log(LOG_ALERT, "socket: %s\n", strerror(errno));
-    return 0;
-  }
-
-  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on) ) < 0) {
-    dsrv_log(LOG_ALERT, "setsockopt SO_REUSEADDR: %s\n", strerror(errno));
-  }
-#if 0
-  flags = fcntl(fd, F_GETFL, 0);
-  if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-    dsrv_log(LOG_ALERT, "fcntl: %s\n", strerror(errno));
-    goto error;
-  }
-#endif
-  on = 1;
-#ifdef IPV6_RECVPKTINFO
-  if (setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on) ) < 0) {
-#else /* IPV6_RECVPKTINFO */
-  if (setsockopt(fd, IPPROTO_IPV6, IPV6_PKTINFO, &on, sizeof(on) ) < 0) {
-#endif /* IPV6_RECVPKTINFO */
-    dsrv_log(LOG_ALERT, "setsockopt IPV6_PKTINFO: %s\n", strerror(errno));
-  }
-
-  dtls_context = dtls_new_context(&fd);
-  if (!dtls_context) {
-    dsrv_log(LOG_EMERG, "cannot create context\n");
-    exit(-1);
-  }
-
-  dtls_set_handler(dtls_context, &cb);
-
-  dtls_connect(dtls_context, &dst);
-
-  while (1) {
-    FD_ZERO(&rfds);
-    FD_ZERO(&wfds);
-
-    FD_SET(fileno(stdin), &rfds);
-    FD_SET(fd, &rfds);
-    /* FD_SET(fd, &wfds); */
-    
-    timeout.tv_sec = 5;
-    timeout.tv_usec = 0;
-    
-    result = select(fd+1, &rfds, &wfds, 0, &timeout);
-    
-    if (result < 0) {		/* error */
-      if (errno != EINTR)
-	perror("select");
-    } else if (result == 0) {	/* timeout */
-    } else {			/* ok */
-      if (FD_ISSET(fd, &wfds))
-	/* FIXME */;
-      else if (FD_ISSET(fd, &rfds))
-	dtls_handle_read(dtls_context);
-      else if (FD_ISSET(fileno(stdin), &rfds))
-	handle_stdin();
-    }
-
-    if (len)
-      try_send(dtls_context, &dst);
-  }
-  
-  dtls_free_context(dtls_context);
-  exit(0);
 }
