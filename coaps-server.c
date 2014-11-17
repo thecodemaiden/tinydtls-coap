@@ -602,8 +602,8 @@ main(int argc, char **argv) {
   init_resources(ctx);
 
   /* init socket and set it to non-blocking */
-  fd = socket(listen_addr.sin6_family, SOCK_DGRAM, 0);
-
+  //fd = socket(listen_addr.sin6_family, SOCK_DGRAM, 0);
+  fd = ctx->sockfd;
   if (fd < 0) {
     dsrv_log(LOG_ALERT, "socket: %s\n", strerror(errno));
     return 0;
@@ -622,11 +622,12 @@ main(int argc, char **argv) {
     dsrv_log(LOG_ALERT, "setsockopt IPV6_PKTINFO: %s\n", strerror(errno));
   }
 
+  /*
   if (bind(fd, (struct sockaddr *)&listen_addr, sizeof(listen_addr)) < 0) {
     dsrv_log(LOG_ALERT, "bind: %s\n", strerror(errno));
     goto error;
   }
-
+*/
   dtls_init();
 
   sec_ctx.fd = &fd;
