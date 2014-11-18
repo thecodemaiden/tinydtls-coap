@@ -55,7 +55,7 @@
 
 #define DEFAULT_PORT 20220
 
-#define INDEX "This is a combination of libcoap's and tinydtl's server implementations."
+#define INDEX "This is a combination of libcoap's and tinydtl's server implementations.\n"
 
 // TODO: convert this mess into C++!
 
@@ -423,7 +423,6 @@ int
 read_from_peer(struct dtls_context_t *ctx, 
 	       session_t *session, uint8 *data, size_t len) {
 
-    printf("IFINDEX:%d\n", session->ifindex);
     coap_address_t srcAddr;
     coap_context_t *coap_ctx = ((coaps_context_t *)dtls_get_app_data(ctx))->coap_context;
 

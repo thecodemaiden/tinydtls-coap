@@ -181,10 +181,10 @@ dtls_handle_read(struct dtls_context_t *ctx) {
     unsigned char addrbuf[72];
     dsrv_print_addr(&session, addrbuf, sizeof(addrbuf));
     dsrv_log(LOG_DEBUG, "got %d bytes from %s\n", len, (char *)addrbuf);
-    dump((unsigned char *)&session, sizeof(session_t));
-    PRINTF("\n");
-    dump(buf, len);
-    PRINTF("\n");
+    //dump((unsigned char *)&session, sizeof(session_t));
+    //PRINTF("\n");
+    //dump(buf, len);
+    //PRINTF("\n");
 #endif
   }
 
@@ -1249,7 +1249,7 @@ main(int argc, char **argv) {
     return -1;
   }
 
-  while (1) {
+  while (!didError && !ready) {
     FD_ZERO(&rfds);
     FD_ZERO(&wfds);
 
