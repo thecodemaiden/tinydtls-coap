@@ -440,7 +440,10 @@ coap_tid_t coaps_send_handler(coap_context_t *ctx, const coap_address_t *dst, co
 // TODO: get a global ref to the dtls_context... :'(
    // HACK: making the session ourselves
     session_t fakeSession;
-    memcpy(&fakeSession, dst, dst->size);
+
+    dtls_session_init(&fakeSession);
+    memcpy(&(fakeSession.addr), &(dst->addr), dst->size);
+    fakeSession.size = dst->size;
     fakeSession.ifindex = *(sec_ctx.fd);
 
     coap_tid_t id = COAP_INVALID_TID;
@@ -592,6 +595,7 @@ main(int argc, char **argv) {
     }
   }
 
+  coap_set_send_handler(&coaps_send_handler);
   dtls_set_log_level(log_level);
   coap_set_log_level(log_level);
 
@@ -672,6 +676,8 @@ main(int argc, char **argv) {
 	; //?
       else if (FD_ISSET(fd, &rfds)) {
 	dtls_handle_read(globalCtx);
+    // TODO: ADD THE DTLS READY EVENT! 
+    coap_dispatch(ctx);
       }
     }
 #ifndef WITHOUT_ASYNC

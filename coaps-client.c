@@ -132,9 +132,9 @@ int
 read_from_peer(struct dtls_context_t *ctx, 
 	       session_t *session, uint8 *data, size_t len) {
 
-    printf("IFINDEX:%d\n", session->ifindex);
     coap_address_t srcAddr;
-    coap_context_t *coap_ctx = ((coaps_context_t *)dtls_get_app_data(ctx))->coap_context;
+    coaps_context_t *app_data = (coaps_context_t *)dtls_get_app_data(ctx);
+    coap_context_t *coap_ctx = app_data->coap_context;
 
     memcpy(&(srcAddr.addr), &(session->addr), session->size);
     srcAddr.size = session->size;
@@ -1051,248 +1051,6 @@ coap_tid_t coaps_send_handler(coap_context_t *ctx, const coap_address_t *dst, co
     return id;
 }
 
-int
-old_main(int argc, char **argv) {
-  coap_context_t  *ctx = NULL;
-  coap_address_t dst;
-  static char addr[INET6_ADDRSTRLEN];
-  void *addrptr = NULL;
-  fd_set readfds;
-  int  result;
-  coap_tick_t now;
-  coap_queue_t *nextpdu;
-  coap_pdu_t  *pdu;
-  static str server;
-  unsigned short port = COAP_DEFAULT_PORT;
-  char port_str[NI_MAXSERV] = "0";
-  int opt, res;
-  struct timeval tv;
-  char *group = NULL;
-  coap_log_t log_level = LOG_WARNING;
-  coap_tid_t tid = COAP_INVALID_TID;
-
-  int sentPayload = 0;
-
-
-  dtls_init();
-  snprintf(port_str, sizeof(port_str), "%d", port);
-
-  while ((opt = getopt(argc, argv, "Nb:e:f:g:m:p:s:t:o:v:A:B:O:P:T:")) != -1) {
-    switch (opt) {
-    case 'b' :
-      cmdline_blocksize(optarg);
-      break;
-    case 'B' :
-      wait_seconds = atoi(optarg);
-      break;
-    case 'e' : 
-      if (!cmdline_input(optarg,&payload))
-	payload.length = 0;     
-      break;
-    case 'f' :
-      if (!cmdline_input_from_file(optarg,&payload))
-	payload.length = 0;
-      break;
-    case 'g' :
-      group = optarg;
-      break;
-    case 'p' :
-      strncpy(port_str, optarg, NI_MAXSERV-1);
-      port_str[NI_MAXSERV - 1] = '\0';
-      break;
-    case 'm' :
-      method = cmdline_method(optarg);
-      break;
-    case 'N' :
-      msgtype = COAP_MESSAGE_NON;
-      break;
-    case 's' :
-      cmdline_subscribe(optarg);
-      break;
-    case 'o' :
-      output_file.length = strlen(optarg);
-      output_file.s = (unsigned char *)coap_malloc(output_file.length + 1);
-      
-      if (!output_file.s) {
-	fprintf(stderr, "cannot set output file: insufficient memory\n");
-	exit(-1);
-      } else {
-	/* copy filename including trailing zero */
-	memcpy(output_file.s, optarg, output_file.length + 1);
-      }
-      break;
-    case 'A' :
-      cmdline_content_type(optarg,COAP_OPTION_ACCEPT);
-      break;
-    case 't' :
-      cmdline_content_type(optarg,COAP_OPTION_CONTENT_TYPE);
-      break;
-    case 'O' :
-      cmdline_option(optarg);
-      break;
-    case 'T' :
-      cmdline_token(optarg);
-      break;
-    case 'v' :
-      log_level = strtol(optarg, NULL, 10);
-      break;
-    default:
-      usage( argv[0], PACKAGE_VERSION );
-      exit( 1 );
-    }
-  }
-
-  coap_set_send_handler(&coaps_send_handler);
-  coap_set_log_level(log_level);
-  dtls_set_log_level(log_level);
-
-  if ( optind < argc )
-    cmdline_uri( argv[optind] );
-  else {
-    usage( argv[0], PACKAGE_VERSION );
-    exit( 1 );
-  }
-
-  server = uri.host;
-  port = uri.port;
-
-  /* resolve destination address where server should be sent */
-  res = resolve_address(&server, &dst.addr.sa);
-
-  if (res < 0) {
-    fprintf(stderr, "failed to resolve address\n");
-    exit(-1);
-  }
-
-  dst.size = res;
-  dst.addr.sin.sin_port = htons(port);
-
-  ctx = get_context("::1", port_str);
-  if (!ctx) {
-    coap_log(LOG_EMERG, "cannot create context\n");
-    return -1;
-  }
-  int on = 1;
-  //int fd = ctx->sockfd;
-  int fd = socket(dst.addr.sa.sa_family, SOCK_DGRAM, 0);
-
-#ifdef IPV6_RECVPKTINFO
-  if (setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on) ) < 0) {
-#else /* IPV6_RECVPKTINFO */
-  if (setsockopt(fd, IPPROTO_IPV6, IPV6_PKTINFO, &on, sizeof(on) ) < 0) {
-#endif /* IPV6_RECVPKTINFO */
-    dsrv_log(LOG_ALERT, "setsockopt IPV6_PKTINFO: %s\n", strerror(errno));
-  }
-
-  sec_ctx.fd = ctx->sockfd;
-  sec_ctx.coap_context = ctx;
-
-  dtls_session_init(&globalSession);
-  globalSession.size = dst.size;
-  memcpy(&(globalSession.addr), &dst.addr, dst.size);
-  globalSession.ifindex = ctx->sockfd;
-
-  coap_register_option(ctx, COAP_OPTION_BLOCK2);
-  coap_register_response_handler(ctx, message_handler);
-
-  /* join multicast group if requested at command line */
-  if (group)
-    join(ctx, group);
-
-
-  /* set block option if requested at commandline */
-  if (flags & FLAGS_BLOCK)
-    set_blocksize();
-
-  if (! (pdu = coap_new_request(ctx, method, optlist)))
-    return -1;
-
-  globalCtx = dtls_new_context(&sec_ctx);
-  dtls_set_handler(globalCtx, &cb);
-
-  dtls_connect(globalCtx, &globalSession);
-
-  set_timeout(&max_wait, wait_seconds);
-  debug("timeout is set to %d seconds\n", wait_seconds);
-
-  while ( !(ready && coap_can_exit(ctx)) && !didError ) {
-    FD_ZERO(&readfds);
-    FD_SET( ctx->sockfd, &readfds );
-
-    if (dtlsReady) {
-        if (!sentPayload) {
-          if (LOG_DEBUG <= coap_get_log_level()) {
-            debug("sending CoAP request:\n");
-            coap_show_pdu(pdu);
-          }
-          if (pdu->hdr->type == COAP_MESSAGE_CON)
-            tid = coap_send_confirmed(ctx, &dst, pdu);
-          else 
-            tid = coap_send(ctx, &dst, pdu);
-
-          if (pdu->hdr->type != COAP_MESSAGE_CON || tid == COAP_INVALID_TID)
-            coap_delete_pdu(pdu);
-        }
-
-
-        nextpdu = coap_peek_next( ctx );
-
-        coap_ticks(&now);
-        while (nextpdu && nextpdu->t <= now - ctx->sendqueue_basetime) {
-          coap_retransmit( ctx, coap_pop_next( ctx ));
-          nextpdu = coap_peek_next( ctx );
-        }
-
-        if (nextpdu && nextpdu->t < min(obs_wait ? obs_wait : max_wait, max_wait) - now) { 
-          /* set timeout if there is a pdu to send */
-          tv.tv_usec = ((nextpdu->t) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-          tv.tv_sec = (nextpdu->t) / COAP_TICKS_PER_SECOND;
-        } else {
-          /* check if obs_wait fires before max_wait */
-          if (obs_wait && obs_wait < max_wait) {
-        tv.tv_usec = ((obs_wait - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-        tv.tv_sec = (obs_wait - now) / COAP_TICKS_PER_SECOND;	
-          } else {
-        tv.tv_usec = ((max_wait - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-        tv.tv_sec = (max_wait - now) / COAP_TICKS_PER_SECOND;
-          }
-        }
-    }
-
-    result = select(ctx->sockfd + 1, &readfds, 0, 0, &tv);
-
-    if ( result < 0 ) {		/* error */
-      perror("select");
-    } else if ( result > 0 ) {	/* read from socket */
-      if ( FD_ISSET( ctx->sockfd, &readfds ) ) {
-	dtls_handle_read( globalCtx );	/* read received data */
-    if (dtlsReady)  coap_dispatch( ctx );	/* and dispatch PDUs from receivequeue */
-      }
-    } else { /* timeout */
-      coap_ticks(&now);
-      if (max_wait <= now) {
-	info("timeout\n");
-	break;
-      } 
-      if (obs_wait && obs_wait <= now) {
-	debug("clear observation relationship\n");
-	clear_obs(ctx, &dst); /* FIXME: handle error case COAP_TID_INVALID */
-
-	/* make sure that the obs timer does not fire again */
-	obs_wait = 0; 
-	obs_seconds = 0;
-      } 
-    }
-  }
-
-  close_output();
-
-  coap_free_context( ctx );
-  dtls_free_context(globalCtx);
-
-  return 0;
-}
-
 static char buf[200];
 static size_t len=0;
 
@@ -1309,7 +1067,7 @@ try_send(struct dtls_context_t *ctx, session_t *dst) {
 int 
 main(int argc, char **argv) {
   fd_set rfds, wfds;
-  unsigned short port = DEFAULT_PORT;
+  unsigned short port = COAP_DEFAULT_PORT;
   char port_str[NI_MAXSERV] = "0";
   log_t log_level = LOG_WARN;
   int fd, result;
@@ -1328,7 +1086,7 @@ main(int argc, char **argv) {
 
 
   dtls_init();
-  snprintf(port_str, sizeof(port_str), "%d", port);
+  snprintf(port_str, sizeof(port_str), "%d", 0);
 
   while ((opt = getopt(argc, argv, "Nb:e:f:g:m:p:s:t:o:v:A:B:O:P:T:")) != -1) {
     switch (opt) {
@@ -1404,12 +1162,19 @@ main(int argc, char **argv) {
     exit(1);
   }
   
+  if ( optind < argc )
+    cmdline_uri( argv[optind] );
+  else {
+    usage( argv[0], PACKAGE_VERSION );
+    exit( 1 );
+  }
+
+  server = uri.host;
+  port = uri.port;
+
   memset(&globalSession, 0, sizeof(session_t));
   /* resolve destination address where server should be sent */
-  str addrStr;
-  addrStr.s = argv[optind++];
-  addrStr.length = strlen(addrStr.s);
-  res = resolve_address(&addrStr, &globalSession.addr.sa);
+  res = resolve_address(&server, &globalSession.addr.sa);
   if (res < 0) {
     dsrv_log(LOG_EMERG, "failed to resolve address\n");
     exit(-1);
@@ -1418,10 +1183,10 @@ main(int argc, char **argv) {
 
   /* use port number from command line when specified or the listen
      port, otherwise */
-  globalSession.addr.sin.sin_port = htons(atoi(port_str));
+  globalSession.addr.sin.sin_port = htons(port);
 
   /* get a coap-context instead of making socket ourselves (!) */
-  ctx = get_context("::", "0");
+  ctx = get_context("::", port_str);
 
   coap_address_t coap_dst;
   coap_address_init(&coap_dst);
@@ -1463,7 +1228,7 @@ main(int argc, char **argv) {
   sec_ctx.fd = fd;
   sec_ctx.coap_context=ctx;
 
-  globalCtx = dtls_new_context(&fd);
+  globalCtx = dtls_new_context(&sec_ctx);
   if (!globalCtx) {
     dsrv_log(LOG_EMERG, "cannot create context\n");
     exit(-1);
@@ -1492,7 +1257,7 @@ main(int argc, char **argv) {
     FD_SET(fd, &rfds);
     /* FD_SET(fd, &wfds); */
     
-    timeout.tv_sec = 5;
+    timeout.tv_sec = 50;
     timeout.tv_usec = 0;
     
     if (dtlsReady) {
@@ -1508,6 +1273,8 @@ main(int argc, char **argv) {
 
           if (pdu->hdr->type != COAP_MESSAGE_CON || tid == COAP_INVALID_TID)
             coap_delete_pdu(pdu);
+          else
+            sentPayload = 1;
         }
 
 
@@ -1546,6 +1313,8 @@ main(int argc, char **argv) {
 	/* FIXME */;
       else if (FD_ISSET(fd, &rfds))
 	dtls_handle_read(globalCtx);
+    if (dtlsReady)
+        coap_dispatch(ctx);
       //else if (FD_ISSET(fileno(stdin), &rfds))
 	//handle_stdin();
     }
