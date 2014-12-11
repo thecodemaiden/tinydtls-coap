@@ -1,9 +1,3 @@
 [submodule "code"]
 	path = code
 	url = git://git.code.sf.net/p/libcoap/code
-[submodule "tinydtls"]
-	path = tinydtls-fork
-	url = https://github.com/thecodemaiden/tinydtls-fork.git
-[submodule "libcoap"]
-	path = libcoap-fork
-	url = https://github.com/thecodemaiden/libcoap-fork.git
