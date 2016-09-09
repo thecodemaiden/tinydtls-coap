@@ -1069,7 +1069,7 @@ main(int argc, char **argv) {
   fd_set rfds, wfds;
   unsigned short port = COAP_DEFAULT_PORT;
   char port_str[NI_MAXSERV] = "0";
-  log_t log_level = LOG_WARN;
+  log_t log_level = LOG_WARNING;
   int fd, result;
   int on = 1;
   int opt, res;
